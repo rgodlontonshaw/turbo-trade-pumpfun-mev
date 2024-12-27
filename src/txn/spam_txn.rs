@@ -8,6 +8,43 @@ use std::time::Instant;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 
+#[derive(Debug)]
+struct TokenInfo {
+    pump_progress: u8,
+    max_holders: u8,
+    market_cap: u64,
+    dev_hold: f64,
+    graduated: bool,
+}
+
+/// Filters tokens based on given criteria
+fn filter_token(token: &TokenInfo) -> bool {
+    token.pump_progress >= 99 &&
+    token.max_holders <= 35 &&
+    token.market_cap >= 4000 &&
+    token.dev_hold <= 1.0 &&
+    token.graduated
+}
+
+/// Fetch token information (stub implementation for demonstration purposes)
+async fn fetch_token_info() -> Vec<TokenInfo> {
+    vec![
+        TokenInfo {
+            pump_progress: 99,
+            max_holders: 30,
+            market_cap: 5000,
+            dev_hold: 0.5,
+            graduated: true,
+        },
+        TokenInfo {
+            pump_progress: 90,
+            max_holders: 40,
+            market_cap: 3000,
+            dev_hold: 1.2,
+            graduated: false,
+        },
+    ]
+}
 
 pub async fn spammer(
     prices_4_spam: Vec<Instruction>,
@@ -17,6 +54,17 @@ pub async fn spammer(
     instructions_vec: &Vec<Instruction>,
 ) {
     let mut handles: Vec<JoinHandle<Option<String>>> = Vec::new();
+
+    // Fetch token info and filter
+    let tokens = fetch_token_info().await;
+    let valid_tokens: Vec<_> = tokens.into_iter().filter(filter_token).collect();
+
+    if valid_tokens.is_empty() {
+        println!("No tokens passed the filters.");
+        return;
+    }
+
+    println!("Filtered tokens: {:?}", valid_tokens);
 
     for (i, price_ix) in prices_4_spam.into_iter().enumerate() {
         // Refresh blockhash for each transaction
