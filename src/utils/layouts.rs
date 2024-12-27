@@ -57,7 +57,7 @@ pub struct AmmInfoV4 {
 
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, Debug)]
 pub struct SerumMarket {
-    _blob_5: [u8; 5], //KOKIEZ
+    _blob_5: [u8; 5],   //KOKIEZ
     account_flags: u64, // Assuming ACCOUNT_FLAGS_LAYOUT is a u64 for this example
     serum_market: Pubkey,
     vault_signer_nonce: u64,

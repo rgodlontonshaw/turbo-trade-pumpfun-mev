@@ -4,11 +4,11 @@ pub const MINT_LEN: usize = 82;
 pub const ACCOUNT_LEN: usize = 165;
 pub const MULTISIG_LEN: usize = 355;
 
-pub const WSOL: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
+//pub const WSOL: Pubkey = pubkey!("So11111111111111111111111111111111111111112");
 pub const ASSOCIATED_TOKEN_PROGRAM_ID: Pubkey =
     pubkey!("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL");
 pub const TOKEN_PROGRAM_ID: Pubkey = pubkey!("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA");
-pub const TOKEN_PROGRAM_ID_2022: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
+//pub const TOKEN_PROGRAM_ID_2022: Pubkey = pubkey!("TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb");
 
 pub const RAY_V4: Pubkey = pubkey!("675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8");
 pub const RAY_AUTHORITY_V4: Pubkey = pubkey!("5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1");
