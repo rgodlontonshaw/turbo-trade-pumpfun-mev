@@ -2,9 +2,9 @@ use solana_client::nonblocking::rpc_client::RpcClient;
 use solana_sdk::{
     commitment_config::CommitmentConfig, compute_budget::ComputeBudgetInstruction,
     instruction::Instruction, pubkey::Pubkey, signature::Keypair, transaction::Transaction,
+    hash::Hash,
 };
 use std::sync::Arc;
-use std::time::Instant;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 
@@ -46,6 +46,26 @@ async fn fetch_token_info() -> Vec<TokenInfo> {
     ]
 }
 
+async fn fetch_blockhash_with_retry(client: &RpcClient, retries: u32) -> Result<Hash, String> {
+    let mut attempts = 0;
+    let mut delay = Duration::from_millis(100);
+
+    while attempts < retries {
+        match client.get_latest_blockhash_with_commitment(CommitmentConfig::processed()).await {
+            Ok(blockhash) => return Ok(blockhash.0),
+            Err(_) if attempts < retries - 1 => {
+                attempts += 1;
+                eprintln!("Retrying to fetch blockhash... Attempt {}/{}", attempts, retries);
+                sleep(delay).await;
+                delay *= 2; // Exponential backoff
+            }
+            Err(e) => return Err(format!("Failed to fetch blockhash after {} retries: {:?}", retries, e)),
+        }
+    }
+
+    Err("Exceeded maximum retries".to_string())
+}
+
 pub async fn spammer(
     prices_4_spam: Vec<Instruction>,
     client: &Arc<RpcClient>,
@@ -54,8 +74,9 @@ pub async fn spammer(
     instructions_vec: &Vec<Instruction>,
 ) {
     let mut handles: Vec<JoinHandle<Option<String>>> = Vec::new();
+    let max_retries = 5;
 
-    // Fetch token info and filter
+    // Fetch and filter tokens
     let tokens = fetch_token_info().await;
     let valid_tokens: Vec<_> = tokens.into_iter().filter(filter_token).collect();
 
@@ -67,14 +88,11 @@ pub async fn spammer(
     println!("Filtered tokens: {:?}", valid_tokens);
 
     for (i, price_ix) in prices_4_spam.into_iter().enumerate() {
-        // Refresh blockhash for each transaction
-        let recent_blockhash = match client
-            .get_latest_blockhash_with_commitment(CommitmentConfig::processed())
-            .await
-        {
-            Ok(blockhash) => blockhash.0,
+        // Fetch blockhash with retries
+        let recent_blockhash = match fetch_blockhash_with_retry(client, max_retries).await {
+            Ok(blockhash) => blockhash,
             Err(e) => {
-                eprintln!("Failed to fetch blockhash: {:?}", e);
+                eprintln!("{}", e);
                 continue; // Skip this transaction
             }
         };
@@ -112,9 +130,9 @@ pub async fn spammer(
         handles.push(handle);
 
         // Add a small delay to respect rate limits
-        sleep(Duration::from_millis(100)).await;
+        sleep(Duration::from_millis(200)).await;
 
-        // Optional: Log progress
+        // Log progress
         println!("Transaction {} queued", i + 1);
     }
 
