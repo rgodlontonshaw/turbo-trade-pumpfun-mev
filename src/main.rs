@@ -7,6 +7,7 @@ use std::env;
 use std::sync::Arc;
 use tokio::time::{sleep, Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Message::Text};
+use chrono::Utc; // For timestamps
 
 #[tokio::main]
 async fn main() {
@@ -38,12 +39,14 @@ async fn main() {
                 while let Some(message) = stream.next().await {
                     match message {
                         Ok(Text(text)) => {
+                            println!("Received WebSocket message: {}", text); // Log all WebSocket text messages
                             match serde_json::from_str::<Value>(&text) {
                                 Ok(parsed) => {
                                     if let Some(logs) = parsed["params"]["result"]["value"]["logs"].as_array() {
                                         for log in logs {
                                             if let Some(log_str) = log.as_str() {
-                                                println!("Detected transaction log: {}", log_str);
+                                                let timestamp = Utc::now(); // Get current timestamp
+                                                println!("[{}] Detected transaction log: {}", timestamp.format("%Y-%m-%d %H:%M:%S%.3f"), log_str);
 
                                                 // Trigger purchase
                                                 if let Err(err) = purchase_and_sell(client.clone(), payer.clone()).await {
@@ -56,8 +59,31 @@ async fn main() {
                                 Err(e) => eprintln!("Failed to parse WebSocket message: {}", e),
                             }
                         }
-                        Ok(_) => println!("Received non-text WebSocket message."),
-                        Err(e) => eprintln!("WebSocket error: {}", e),
+                        Ok(tokio_tungstenite::tungstenite::Message::Ping(data)) => {
+                            let timestamp = Utc::now();
+                            println!("[{}] Received Ping: {:?}", timestamp.format("%Y-%m-%d %H:%M:%S%.3f"), data);
+                            if let Err(e) = stream.send(tokio_tungstenite::tungstenite::Message::Pong(data.clone())).await {
+                                eprintln!("Failed to send Pong: {}", e);
+                            } else {
+                                println!("[{}] Sent Pong: {:?}", timestamp.format("%Y-%m-%d %H:%M:%S%.3f"), data);
+                            }
+                        }
+                        Ok(tokio_tungstenite::tungstenite::Message::Pong(data)) => {
+                            println!("Received Pong: {:?}", data);
+                        }
+                        Ok(tokio_tungstenite::tungstenite::Message::Binary(data)) => {
+                            println!("Received Binary message: {:?}", data);
+                        }
+                        Ok(tokio_tungstenite::tungstenite::Message::Close(frame)) => {
+                            println!("Received Close message: {:?}", frame);
+                            break; // Exit the loop if the server closes the connection
+                        }
+                        Ok(other) => {
+                            println!("Received other message: {:?}", other);
+                        }
+                        Err(e) => {
+                            eprintln!("WebSocket error: {}", e);
+                        }
                     }
                 }
             }
@@ -78,18 +104,21 @@ async fn send_request(
         r#"{{
             "jsonrpc":"2.0",
             "id":1,
-            "method":"logsSubscribe",
+            "method":"accountSubscribe",
             "params":[
-                {{"mentions":["{}"]}}
+                "{}"
             ]
         }}"#,
         wallet
     );
 
+    println!("WebSocket subscription request: {}", subscription_request);
+
     stream.send(tokio_tungstenite::tungstenite::Message::Text(subscription_request)).await?;
-    println!("Subscribed to wallet: {}", wallet);
+    println!("Subscribed to account: {}", wallet);
     Ok(())
 }
+
 
 async fn purchase_and_sell(client: Arc<RpcClient>, payer: Arc<Keypair>) -> Result<(), Box<dyn std::error::Error>> {
     // Simulated purchase transaction
