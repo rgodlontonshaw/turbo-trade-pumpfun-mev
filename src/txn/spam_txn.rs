@@ -73,8 +73,9 @@ pub async fn spammer(
     m_pk: &Pubkey,
     instructions_vec: &Vec<Instruction>,
 ) {
-    let mut handles: Vec<JoinHandle<Option<String>>> = Vec::new();
-    let max_retries = 5;
+    let max_retries = 3; // Reduced for free RPC testing
+    let mut in_trade = false;
+    let base_delay = Duration::from_millis(1000); // Configurable base delay
 
     // Fetch and filter tokens
     let tokens = fetch_token_info().await;
@@ -88,64 +89,60 @@ pub async fn spammer(
     println!("Filtered tokens: {:?}", valid_tokens);
 
     for (i, price_ix) in prices_4_spam.into_iter().enumerate() {
-        // Fetch blockhash with retries
+        if in_trade {
+            println!("Already in a trade, stopping further monitoring.");
+            break;
+        }
+
+        // Fetch blockhash just before transaction creation
         let recent_blockhash = match fetch_blockhash_with_retry(client, max_retries).await {
             Ok(blockhash) => blockhash,
             Err(e) => {
-                eprintln!("{}", e);
+                eprintln!("Failed to fetch blockhash: {}", e);
                 continue; // Skip this transaction
             }
         };
 
-        // Clone resources for the async block
+        // Prepare transaction
         let mut ix_vec = instructions_vec.clone();
-        let client_clone = client.clone();
-        let payer_clone = PAYER.clone();
-
-        // Add the price-specific instruction
         ix_vec.push(price_ix);
 
-        // Create transaction
         let tx = Transaction::new_signed_with_payer(
             &ix_vec,
-            Some(&m_pk),
-            &[&payer_clone],
+            Some(m_pk),
+            &[PAYER],
             recent_blockhash,
         );
 
-        // Spawn a task to send the transaction
-        let handle = tokio::spawn(async move {
-            match client_clone.send_transaction(&tx).await {
-                Ok(signature) => {
-                    println!("Transaction succeeded with signature: {}", signature);
-                    Some(signature.to_string())
-                }
-                Err(e) => {
-                    eprintln!("Transaction failed: {:?}", e); // Log full error
-                    None
+        match client.send_transaction(&tx).await {
+            Ok(signature) => {
+                println!("Transaction succeeded with signature: {}", signature);
+                in_trade = true; // Stop monitoring once a trade is initiated
+                break;
+            }
+            Err(e) => {
+                match &e.kind {
+                    solana_client::client_error::ClientErrorKind::Reqwest(reqwest_err) => {
+                        eprintln!("Rate-limited: {:?}", reqwest_err);
+                        let delay = base_delay * (i as u32 + 1); // Exponential backoff
+                        eprintln!("Retrying after {:?} delay...", delay);
+                        sleep(delay).await;
+                    }
+                    solana_client::client_error::ClientErrorKind::RpcError(rpc_error) => {
+                        eprintln!("RPC Error: {:?}", rpc_error);
+                    }
+                    _ => eprintln!("Transaction failed: {:?}", e),
                 }
             }
-        });
-
-        handles.push(handle);
-
-        // Add a small delay to respect rate limits
-        sleep(Duration::from_millis(200)).await;
-
-        // Log progress
-        println!("Transaction {} queued", i + 1);
-    }
-
-    // Wait for all transactions to finish and collect results
-    let mut signatures = Vec::new();
-    for handle in handles {
-        if let Ok(Some(sig)) = handle.await {
-            signatures.push(sig);
         }
+
+        // Add a delay to avoid rate-limiting
+        sleep(base_delay).await;
     }
 
-    println!("Successful Transactions: {}", signatures.len());
+    println!("Spammer function exiting. Monitoring halted due to active trade or completion.");
 }
+
 
 /// Generate instructions for fees
 pub async fn array_of_fees(spam_amount: u64, spam_price: u64) -> Vec<Instruction> {
