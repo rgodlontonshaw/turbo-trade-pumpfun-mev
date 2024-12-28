@@ -1,80 +1,44 @@
-# PumpFun Trading Bot
+# TurboTrade
 
-Welcome to the PumpFun Trading Bot repository! This bot is designed for traders on the PumpFun trading platform who wish to learn how trading bots are created and how they operate. The bot monitors new coins, buys them, waits for 10 seconds, and then sells them. 
+TurboTrade is a command-line interface (CLI) tool designed to copytrade a Solana wallet. It monitors transactions of a specified wallet and replicates them. Please note that this project is still under development and not fully functional yet.
 
-## Overview
+## Features
 
-This project provides an educational example of a trading bot. The bot's main functionality includes:
+- Monitors a specified Solana wallet for new transactions.
+- Processes transactions involving Raydium and Jupiter swaps.
+- Recognizes transactions from Raydium, PumpFun and Jupiter.
 
-1. **Monitoring New Coins**: The bot continuously monitors for the release of new coins.
-2. **Buying**: Once a new coin is detected, the bot executes a buy order.
-3. **Sleeping**: The bot pauses for 10 seconds to allow the market to react.
-4. **Selling**: After the pause, the bot executes a sell order.
+## Installation
 
-## How It Works
+To install TurboTrade AI, you need to have Rust and Cargo installed. If you don't have them installed, you can follow the instructions
 
-The bot spams transactions to ensure it gets an entry as soon as possible. The effectiveness of this approach depends heavily on the quality of the provided node. For instance, my test on a cheap 1 SOL node and 50 spammed transactions, got an entry in about 10 seconds.
-Note: If you plan running it in 
+## Usage
 
-### Key File
+To run TurboTrade AI, use the following command in your terminal:
 
-- **check_logs_buy_sell.rs**: Contains the core logic for buying, sleeping, and selling. The sleep function is located at line 208.
-
-## Environment Variables
-
-Below are the necessary environment variables to configure the bot:
-
-```env
-PAYER=your_private_key
-spam_limit=50
-budget_limit=80000
-budget_price=10000
-investment=0.02
-slippage=0.0 
-RPC_HTTPS_URL=http://aaaaaaaaa.com
-WSS_HTTPS_URL=wss://aaaaaaaaa.com
+```sh
+cargo run --release -- copytrade <WALLET_ADDRESS>
 ```
 
-**Note**: The `slippage` variable in the environment is not used and can be ignored.
+Replace `<WALLET_ADDRESS>` with the address of the wallet you want to copytrade. Note that you need to use Solana CLI to read the keypair from there to be used.
 
-## How to Run
+## Example
 
-### Prerequisites
+```sh
+cargo run --release -- copytrade 3M5tY7J8z9Q1a2b3c4d5e6f7g8h9i0j1k2l3m4n5o6p7
+```
 
-- **Rust**: Ensure you have Rust installed. You can install Rust using [rustup](https://rustup.rs/).
+This command will start monitoring the specified wallet for new transactions and replicate them as they are detected.
 
-### Steps
+## Current Status
 
-1. **Clone the Repository**:
-   ```bash
-   git clone <repository-url>
-   cd <repository-directory>
-   ```
+Currently, TurboTrade AI can recognize if a transaction is from Raydium or Jupiter when a Solana address is provided. Work is ongoing to support transaction parsing and interpretation, starting with Raydium transactions.
 
-2. **Rename the Repository (for VS Code Users)**:
-   If you are using VS Code, rename the repository to `sniper`:
+## License
 
-3. **Build the Project**:
-   ```bash
-   cargo build 
-   ```
+This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
 
-4. **Set Up Environment Variables**:
-   Create a `.env` file in the project directory and add the necessary environment variables as described above.
+## Contributing
 
-5. **Run the Bot**:
-   ```bash
-   cargo run 
-   ```
-   
-## Disclaimer
+Contributions are welcome! Please open an issue or submit a pull request for any improvements or bug fixes.
 
-This bot is for educational purposes only. It is designed to demonstrate how trading bots function and should not be used for actual trading without a thorough understanding of the risks involved.
-
-## Contact
-
-For any questions, suggestions, or feedback, please reach out to the developer:
-
-- **All contacts are in my profile**
-
-Happy Learning!

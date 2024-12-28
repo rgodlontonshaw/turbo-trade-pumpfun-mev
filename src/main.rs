@@ -1,155 +1,260 @@
-use dotenv::dotenv;
-use futures_util::{StreamExt, SinkExt}; // Import SinkExt for `send`
-use serde_json::Value;
-use solana_client::nonblocking::rpc_client::RpcClient;
-use solana_sdk::{signature::Keypair};
-use std::env;
-use std::sync::Arc;
-use tokio::time::{sleep, Duration};
-use tokio_tungstenite::{connect_async, tungstenite::Message::Text};
-use chrono::Utc; // For timestamps
+// src/main.rs
+use clap::{Parser, Subcommand};
+use solana_client::rpc_client::RpcClient;
+use solana_client::rpc_config::RpcTransactionConfig;
+use solana_sdk::commitment_config::CommitmentConfig;
+use solana_sdk::pubkey::Pubkey;
+use solana_sdk::signature::{read_keypair_file, Signature};
+use solana_sdk::transaction::Transaction;
+use anyhow::Result;
+use solana_transaction_status::{
+    EncodedTransaction, UiInstruction, UiMessage, UiParsedInstruction, UiParsedMessage,
+    UiPartiallyDecodedInstruction, UiTransactionEncoding, UiTransactionStatusMeta,
+    UiTransactionTokenBalance,
+};
+use std::str::FromStr;
+
+use spl_token::state::{Account as TokenAccount, GenericTokenAccount};
+use solana_sdk::bs58;
+
+#[derive(Parser)]
+#[command(
+    name = "soltrac",
+    version = "0.1.0",
+    author = "coderipper",
+    about = "A CLI tool to copytrade a Solana wallet"
+)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// Start copytrading a wallet
+    Copytrade {
+        /// The wallet address to copytrade
+        #[arg(value_name = "WALLET_ADDRESS")]
+        wallet_address: String,
+    },
+}
 
 #[tokio::main]
-async fn main() {
-    dotenv().ok();
-    env_logger::init();
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
 
-    // Load environment variables
-    let payer_key = env::var("PAYER").expect("PAYER must be set in .env file");
-    let payer = Arc::new(Keypair::from_base58_string(&payer_key));
+    match &cli.command {
+        Commands::Copytrade { wallet_address } => {
+            let rpc_client = get_rpc_client();
+            println!("Starting to copytrade wallet: {}", wallet_address);
+            if let Err(e) = monitor_wallet(&rpc_client, wallet_address).await {
+                eprintln!("Error: {:?}", e);
+            }
+        }
+    }
 
-    let rpc_https_url = env::var("RPC_HTTPS_URL").expect("RPC_HTTPS_URL must be set in .env file");
-    let wss_https_url = env::var("WSS_HTTPS_URL").expect("WSS_HTTPS_URL must be set in .env file");
-    let tracked_wallet = env::var("TRACKED_WALLET").expect("TRACKED_WALLET must be set in .env file");
+    Ok(())
+}
 
-    let client = Arc::new(RpcClient::new(rpc_https_url));
+fn get_rpc_client() -> RpcClient {
+    let rpc_url = "https://api.mainnet-beta.solana.com";
+    RpcClient::new_with_commitment(rpc_url.to_string(), CommitmentConfig::confirmed())
+}
 
-    // WebSocket listener for wallet transactions
+async fn monitor_wallet(rpc_client: &RpcClient, wallet_address: &str) -> Result<()> {
+    let pubkey = wallet_address.parse::<Pubkey>()?;
+    let mut processed_signatures = std::collections::HashSet::new();
+    let mut first_poll = true;
+
     loop {
-        match connect_async(wss_https_url.clone()).await {
-            Ok((mut stream, _)) => {
-                println!("WebSocket connection established.");
+        println!("Polling wallet: {}", wallet_address);
+        let signatures = rpc_client.get_signatures_for_address(&pubkey)?;
 
-                // Send the subscription request for the tracked wallet
-                if let Err(e) = send_request(&mut stream, &tracked_wallet).await {
-                    eprintln!("Failed to send subscription request: {}", e);
-                    continue;
+        if first_poll {
+            // Initial fetch: Add all current signatures to processed set
+            for signature_info in &signatures {
+                processed_signatures.insert(signature_info.signature.clone());
+            }
+            first_poll = false;
+            println!("First poll completed, tracking new transactions only.");
+        } else {
+            // Process new transactions only
+            for signature_info in signatures {
+                if !processed_signatures.contains(&signature_info.signature) {
+                    processed_signatures.insert(signature_info.signature.clone());
+                    let timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f");
+                    println!(
+                        "[{}] New transaction signature detected: {}",
+                        timestamp, signature_info.signature
+                    );
+                    // Here you can call process_transaction if it's a trade
+                    process_transaction(rpc_client, &signature_info.signature).await?;
                 }
+            }
+        }
 
-                while let Some(message) = stream.next().await {
-                    match message {
-                        Ok(Text(text)) => {
-                            println!("Received WebSocket message: {}", text); // Log all WebSocket text messages
-                            match serde_json::from_str::<Value>(&text) {
-                                Ok(parsed) => {
-                                    if let Some(logs) = parsed["params"]["result"]["value"]["logs"].as_array() {
-                                        for log in logs {
-                                            if let Some(log_str) = log.as_str() {
-                                                let timestamp = Utc::now(); // Get current timestamp
-                                                println!("[{}] Detected transaction log: {}", timestamp.format("%Y-%m-%d %H:%M:%S%.3f"), log_str);
+        // Sleep for a while before polling again
+        tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
+    }
+}
 
-                                                // Trigger purchase
-                                                if let Err(err) = purchase_and_sell(client.clone(), payer.clone()).await {
-                                                    eprintln!("Error during purchase/sell: {}", err);
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(e) => eprintln!("Failed to parse WebSocket message: {}", e),
-                            }
-                        }
-                        Ok(tokio_tungstenite::tungstenite::Message::Ping(data)) => {
-                            let timestamp = Utc::now();
-                            println!("[{}] Received Ping: {:?}", timestamp.format("%Y-%m-%d %H:%M:%S%.3f"), data);
-                            if let Err(e) = stream.send(tokio_tungstenite::tungstenite::Message::Pong(data.clone())).await {
-                                eprintln!("Failed to send Pong: {}", e);
-                            } else {
-                                println!("[{}] Sent Pong: {:?}", timestamp.format("%Y-%m-%d %H:%M:%S%.3f"), data);
-                            }
-                        }
-                        Ok(tokio_tungstenite::tungstenite::Message::Pong(data)) => {
-                            println!("Received Pong: {:?}", data);
-                        }
-                        Ok(tokio_tungstenite::tungstenite::Message::Binary(data)) => {
-                            println!("Received Binary message: {:?}", data);
-                        }
-                        Ok(tokio_tungstenite::tungstenite::Message::Close(frame)) => {
-                            println!("Received Close message: {:?}", frame);
-                            break; // Exit the loop if the server closes the connection
-                        }
-                        Ok(other) => {
-                            println!("Received other message: {:?}", other);
-                        }
-                        Err(e) => {
-                            eprintln!("WebSocket error: {}", e);
+async fn process_transaction(rpc_client: &RpcClient, signature: &str) -> Result<()> {
+    println!("Processing transaction");
+
+    let raydium_program_id = Pubkey::from_str("routeUGWgWzqBWFcrCfv8tritsqukccJPu3q5GPP3xS")?;
+    let jupiter_program_id = Pubkey::from_str("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4")?;
+    let pumpfun_program_id = Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")?;
+
+    let transaction_with_meta = rpc_client.get_transaction_with_config(
+        &Signature::from_str(signature)?,
+        RpcTransactionConfig {
+            encoding: Some(UiTransactionEncoding::JsonParsed),
+            commitment: Some(CommitmentConfig::confirmed()),
+            max_supported_transaction_version: Some(0),
+        },
+    )?;
+
+    if let Some(meta) = &transaction_with_meta.transaction.meta {
+        if let EncodedTransaction::Json(parsed_tx) = &transaction_with_meta.transaction.transaction {
+            if let UiMessage::Parsed(message) = &parsed_tx.message {
+                let mut is_raydium_tx = false;
+                let mut is_jupiter_tx = false;
+                let mut is_pumpfun_tx = false;
+
+
+                // Check if any instruction interacts with Raydium or Jupiter
+                for instruction in &message.instructions {
+                    if let UiInstruction::Parsed(UiParsedInstruction::PartiallyDecoded(
+                        partially_decoded,
+                    )) = instruction
+                    {
+                        if partially_decoded.program_id == raydium_program_id.to_string() {
+                            is_raydium_tx = true;
+                        } else if partially_decoded.program_id == jupiter_program_id.to_string() {
+                            is_jupiter_tx = true;
+                        } else if partially_decoded.program_id == is_pumpfun_tx.to_string() {
+                            is_pumpfun_tx = true;
                         }
                     }
                 }
+
+                // Route transaction to appropriate handler
+                if is_raydium_tx {
+                    parse_raydium_swap(message, meta, rpc_client).await?;
+                } else if is_jupiter_tx {
+                    parse_jupiter_swap(message)?;
+                } else if is_jupiter_tx {
+                    parse_pumpfun_swap(message)?;
+                } else {
+                    println!("No Raydium, Jupiter or PumpFun instructions found.");
+                }
             }
-            Err(e) => {
-                eprintln!("WebSocket connection error: {}", e);
-                println!("Reconnecting in 5 seconds...");
-                sleep(Duration::from_secs(5)).await;
-            }
-        }
-    }
-}
-
-async fn send_request(
-    stream: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
-    wallet: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let subscription_request = format!(
-        r#"{{
-            "jsonrpc":"2.0",
-            "id":1,
-            "method":"accountSubscribe",
-            "params":[
-                "{}"
-            ]
-        }}"#,
-        wallet
-    );
-
-    println!("WebSocket subscription request: {}", subscription_request);
-
-    stream.send(tokio_tungstenite::tungstenite::Message::Text(subscription_request)).await?;
-    println!("Subscribed to account: {}", wallet);
-    Ok(())
-}
-
-
-async fn purchase_and_sell(client: Arc<RpcClient>, payer: Arc<Keypair>) -> Result<(), Box<dyn std::error::Error>> {
-    // Simulated purchase transaction
-    println!("Executing purchase transaction...");
-    let purchase_result = execute_transaction(client.clone(), payer.clone()).await;
-    match purchase_result {
-        Ok(signature) => println!("Purchase successful: {}", signature),
-        Err(err) => {
-            eprintln!("Purchase failed: {}", err);
-            return Err(err.into());
-        }
-    }
-
-    // Wait 4-5 seconds
-    sleep(Duration::from_secs(4)).await;
-
-    // Simulated sell transaction
-    println!("Executing sell transaction...");
-    let sell_result = execute_transaction(client, payer).await;
-    match sell_result {
-        Ok(signature) => println!("Sell successful: {}", signature),
-        Err(err) => {
-            eprintln!("Sell failed: {}", err);
-            return Err(err.into());
         }
     }
 
     Ok(())
 }
 
-async fn execute_transaction(_client: Arc<RpcClient>, _payer: Arc<Keypair>) -> Result<String, Box<dyn std::error::Error>> {
-    println!("Transaction executed (mock). Returning mock signature.");
-    Ok("mock_signature".to_string())
+// Method to parse swap details for Raydium transactions
+async fn parse_raydium_swap(
+    message: &UiParsedMessage,
+    meta: &UiTransactionStatusMeta,
+    rpc_client: &RpcClient,
+) -> Result<()> {
+    println!("Parsing Raydium swap...");
+
+    // Build a mapping from account indices to pubkeys
+    let account_keys = &message.account_keys;
+    let mut account_map = std::collections::HashMap::new();
+    for (i, key) in account_keys.iter().enumerate() {
+        account_map.insert(i, key.pubkey.clone());
+    }
+
+    // Identify the swap instruction
+    for instruction in &message.instructions {
+        if let UiInstruction::Parsed(UiParsedInstruction::PartiallyDecoded(partially_decoded)) =
+            instruction
+        {
+            if partially_decoded.program_id == "routeUGWgWzqBWFcrCfv8tritsqukccJPu3q5GPP3xS" {
+                println!("Instruction: {:?}", partially_decoded);
+            }
+        }
+    }
+
+    let (input_amount, output_amount) = calculate_token_balance_changes(
+        meta,
+    )?;
+
+    // Print the swap details
+    println!("type: SWAP");
+    // println!("input_token: \"{}\"", input_token_mint);
+    println!("input_amount: \"{}\"", input_amount);
+    // println!("output_token: \"{}\"", output_token_mint);
+    println!("output_amount: \"{}\"", output_amount);
+
+    Ok(())
+}
+
+// Helper function to get the mint address of a token account
+async fn get_token_account_mint(
+    rpc_client: &RpcClient,
+    token_account_pubkey_str: &str,
+) -> Result<String> {
+    let token_account_pubkey = Pubkey::from_str(token_account_pubkey_str)?;
+    let account_data = rpc_client.get_account_data(&token_account_pubkey)?;
+
+    let token_account = TokenAccount::unpack_account_mint(&account_data).unwrap();
+    Ok(token_account.to_string())
+}
+
+// Helper function to calculate the token balance changes for input and output tokens
+fn calculate_token_balance_changes(
+    meta: &UiTransactionStatusMeta,
+) -> Result<(u64, u64)> {
+    let mut input_amount: u64 = 0;
+    let mut output_amount: u64 = 0;
+
+    println!("meta: {:?}", meta);
+    // Maybe do something with the meta data to calculate the input and output amounts and get the token being used?
+
+    Ok((input_amount, output_amount))
+}
+
+// Method to parse swap details for Jupiter transactions
+fn parse_jupiter_swap(_message: &UiParsedMessage) -> Result<()> {
+    println!("Parsing Jupiter swap...");
+
+    // Implement similar logic for Jupiter swaps
+    Ok(())
+}
+
+fn parse_pumpfun_swap(_message: &UiParsedMessage) -> Result<()> {
+    println!("Parsing PumpFun swap...");
+
+    // Implement similar logic for Jupiter swaps
+    Ok(())
+}
+
+async fn replicate_transaction(rpc_client: &RpcClient, _tx: &Transaction) -> Result<()> {
+    use solana_sdk::signer::Signer;
+
+    // Load your keypair
+    // let home_dir = dirs::home_dir().expect("Cannot find home directory");
+    // let keypair_path = home_dir.join(".config").join("solana").join("id.json");
+    // let _payer = read_keypair_file(keypair_path)?;
+
+    // // Construct a new transaction similar to the one detected
+    // let new_tx = Transaction::new_signed_with_payer(
+    //     &tx.message.instructions,
+    //     Some(&payer.pubkey()),
+    //     &[&payer],
+    //     tx.message.recent_blockhash,
+    // );
+
+    // Send the transaction
+    let signature = ""; // rpc_client.send_and_confirm_transaction(&new_tx)?;
+
+    println!("Replicated transaction with signature: {}", signature);
+
+    Ok(())
 }
