@@ -143,7 +143,7 @@ async fn process_transaction(rpc_client: &RpcClient, signature: &str) -> Result<
                     parse_raydium_swap(message, meta, rpc_client).await?;
                 } else if is_jupiter_tx {
                     parse_jupiter_swap(message)?;
-                } else if is_jupiter_tx {
+                } else if is_pumpfun_tx {
                     parse_pumpfun_swap(message)?;
                 } else {
                     println!("No Raydium, Jupiter or PumpFun instructions found.");
@@ -231,7 +231,7 @@ fn parse_jupiter_swap(_message: &UiParsedMessage) -> Result<()> {
 fn parse_pumpfun_swap(_message: &UiParsedMessage) -> Result<()> {
     println!("Parsing PumpFun swap...");
 
-    // Implement similar logic for Jupiter swaps
+    // Implement similar logic for PumpFun swaps
     Ok(())
 }
 
