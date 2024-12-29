@@ -13,7 +13,9 @@ use solana_transaction_status::{
     UiTransactionTokenBalance,
 };
 use std::str::FromStr;
-
+use std::sync::Arc; // For Arc type
+use solana_sdk::signer::keypair::Keypair; // For Keypair type
+use solana_sdk::signer::Signer; 
 use spl_token::state::{Account as TokenAccount, GenericTokenAccount};
 use solana_sdk::bs58;
 
@@ -101,8 +103,6 @@ async fn monitor_wallet(rpc_client: &RpcClient, wallet_address: &str) -> Result<
 async fn process_transaction(rpc_client: &RpcClient, signature: &str) -> Result<()> {
     println!("Processing transaction");
 
-    let raydium_program_id = Pubkey::from_str("routeUGWgWzqBWFcrCfv8tritsqukccJPu3q5GPP3xS")?;
-    let jupiter_program_id = Pubkey::from_str("JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4")?;
     let pumpfun_program_id = Pubkey::from_str("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P")?;
 
     let transaction_with_meta = rpc_client.get_transaction_with_config(
@@ -115,85 +115,31 @@ async fn process_transaction(rpc_client: &RpcClient, signature: &str) -> Result<
     )?;
 
     if let Some(meta) = &transaction_with_meta.transaction.meta {
+        // println!("Transaction meta: {:?}", meta);
+
         if let EncodedTransaction::Json(parsed_tx) = &transaction_with_meta.transaction.transaction {
             if let UiMessage::Parsed(message) = &parsed_tx.message {
-                let mut is_raydium_tx = false;
-                let mut is_jupiter_tx = false;
-                let mut is_pumpfun_tx = false;
+                // println!("Parsed message: {:?}", message);
 
-
-                // Check if any instruction interacts with Raydium or Jupiter
                 for instruction in &message.instructions {
-                    if let UiInstruction::Parsed(UiParsedInstruction::PartiallyDecoded(
-                        partially_decoded,
-                    )) = instruction
-                    {
-                        if partially_decoded.program_id == raydium_program_id.to_string() {
-                            is_raydium_tx = true;
-                        } else if partially_decoded.program_id == jupiter_program_id.to_string() {
-                            is_jupiter_tx = true;
-                        } else if partially_decoded.program_id == is_pumpfun_tx.to_string() {
-                            is_pumpfun_tx = true;
+                    if let UiInstruction::Parsed(UiParsedInstruction::PartiallyDecoded(partially_decoded)) = instruction {
+                        //println!("Instruction: {:?}", partially_decoded);
+
+                        if partially_decoded.program_id == pumpfun_program_id.to_string() {
+                            println!("PumpFun instruction detected.");
+                            parse_pumpfun_swap(message)?;
+                            return Ok(());
                         }
                     }
                 }
-
-                // Route transaction to appropriate handler
-                if is_raydium_tx {
-                    parse_raydium_swap(message, meta, rpc_client).await?;
-                } else if is_jupiter_tx {
-                    parse_jupiter_swap(message)?;
-                } else if is_pumpfun_tx {
-                    parse_pumpfun_swap(message)?;
-                } else {
-                    println!("No Raydium, Jupiter or PumpFun instructions found.");
-                }
             }
         }
     }
 
+    println!("No relevant instructions found in transaction.");
     Ok(())
 }
 
-// Method to parse swap details for Raydium transactions
-async fn parse_raydium_swap(
-    message: &UiParsedMessage,
-    meta: &UiTransactionStatusMeta,
-    rpc_client: &RpcClient,
-) -> Result<()> {
-    println!("Parsing Raydium swap...");
-
-    // Build a mapping from account indices to pubkeys
-    let account_keys = &message.account_keys;
-    let mut account_map = std::collections::HashMap::new();
-    for (i, key) in account_keys.iter().enumerate() {
-        account_map.insert(i, key.pubkey.clone());
-    }
-
-    // Identify the swap instruction
-    for instruction in &message.instructions {
-        if let UiInstruction::Parsed(UiParsedInstruction::PartiallyDecoded(partially_decoded)) =
-            instruction
-        {
-            if partially_decoded.program_id == "routeUGWgWzqBWFcrCfv8tritsqukccJPu3q5GPP3xS" {
-                println!("Instruction: {:?}", partially_decoded);
-            }
-        }
-    }
-
-    let (input_amount, output_amount) = calculate_token_balance_changes(
-        meta,
-    )?;
-
-    // Print the swap details
-    println!("type: SWAP");
-    // println!("input_token: \"{}\"", input_token_mint);
-    println!("input_amount: \"{}\"", input_amount);
-    // println!("output_token: \"{}\"", output_token_mint);
-    println!("output_amount: \"{}\"", output_amount);
-
-    Ok(())
-}
 
 // Helper function to get the mint address of a token account
 async fn get_token_account_mint(
@@ -256,5 +202,36 @@ async fn replicate_transaction(rpc_client: &RpcClient, _tx: &Transaction) -> Res
 
     println!("Replicated transaction with signature: {}", signature);
 
+    Ok(())
+}
+
+async fn replicate_pumpfun_trade(
+    rpc_client: Arc<RpcClient>,
+    payer: Arc<Keypair>,
+    message: &UiParsedMessage,
+) -> Result<()> {
+    // Example: Construct a transaction to replicate the trade
+    let token_account = message.account_keys.first().unwrap().pubkey.clone();
+    let destination_account = payer.pubkey();
+
+    let transfer_instruction = spl_token::instruction::transfer(
+        &spl_token::id(),
+        &Pubkey::from_str(&token_account)?,
+        &destination_account,
+        &payer.pubkey(),
+        &[],
+        1_000_000, // Example amount
+    )?;
+
+    let recent_blockhash = rpc_client.get_latest_blockhash()?;
+    let transaction = Transaction::new_signed_with_payer(
+        &[transfer_instruction],
+        Some(&payer.pubkey()),
+        &[&*payer],
+        recent_blockhash,
+    );
+
+    rpc_client.send_transaction(&transaction)?;
+    println!("Replicated PumpFun trade successfully.");
     Ok(())
 }
